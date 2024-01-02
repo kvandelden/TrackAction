@@ -1,0 +1,7 @@
+
+https://forum.pjrc.com/index.php
+
+https://www.pjrc.com/teensy/td_serial.html
+
+https://docs.platformio.org/en/latest/platforms/teensy.html
+
