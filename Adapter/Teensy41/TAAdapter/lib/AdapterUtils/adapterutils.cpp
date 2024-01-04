@@ -7,12 +7,17 @@
 #include "jsmn.h"
 #include "messagebus.h"
 
-#define DEBUGTA 0
+#define HIGHRES_BOUNDRY_TICKS 10
 
 char   * adapterId;
 uint32_t LowResClockHz = 0;
 uint32_t HighResClockHz = 0;
 uint32_t LowResTicks_HighResRollOver = 0;
+uint32_t HighResTicks_PerLowResTick = 0;
+uint32_t HighResTicks_RollOverResidual = 0;
+uint32_t HighResRicks_RollOverFracResidual = 0;
+uint32_t Fract_HR_Ticks_MAX = 0;
+uint32_t Fract_HR_Ticks_MIN = 0;
 void calcHighResRollOver();
 
 uint32_t debounceMs = 0;
@@ -105,9 +110,16 @@ extern "C" void TAsetup_setHighResClockHz(uint32_t Hz){
     calcHighResRollOver();
 };
 
+// See High Resolution Timing Math.xls in github
 void calcHighResRollOver(){
-    if(LowResClockHz && HighResClockHz)
+    if(LowResClockHz && HighResClockHz){
        LowResTicks_HighResRollOver = ((uint64_t) UINT32_MAX * LowResClockHz) /(uint64_t) HighResClockHz; 
+       HighResTicks_PerLowResTick = HighResClockHz/ LowResClockHz;
+       HighResTicks_RollOverResidual = UINT32_MAX % HighResClockHz;
+       HighResRicks_RollOverFracResidual = HighResTicks_RollOverResidual % HighResTicks_PerLowResTick;
+       Fract_HR_Ticks_MAX = HighResRicks_RollOverFracResidual - HIGHRES_BOUNDRY_TICKS;
+       Fract_HR_Ticks_MIN = HIGHRES_BOUNDRY_TICKS;
+    }
 }
 
 extern "C" void TAsetup_setIRQDebounceTime(uint32_t millis){
@@ -269,6 +281,8 @@ extern "C" double InputChange_getSeconds(InputMessageQueueItem *qi) {
     double rv = 0;
     // The low resolution clock is intended to never role over
     // The high resolution clock rolls over quickly
+    // See High Resolution Timing Math.xls in github
+
     if(qi->LowResClockTick_Prev == 0)
         return 0;
 
@@ -278,14 +292,26 @@ extern "C" double InputChange_getSeconds(InputMessageQueueItem *qi) {
 
     // Check if we can use the High Resolution Clock
     if(lowResTicks < LowResTicks_HighResRollOver){
-        // Use High Resolution Timer
+        // Use High Resolution Timer only..
         if(qi->HighResClockTick > qi->HighResClockTick_Prev){
             rv= (qi->HighResClockTick - qi->HighResClockTick_Prev)/(double)HighResClockHz;
         } else {
             rv = (qi->HighResClockTick + UINT32_MAX - qi->HighResClockTick_Prev)/(double)HighResClockHz;
         }
     } else {
-        // Possibly use the High resolution timer to determine the Lower Part of the fraction ?
+        // Possibly use the High resolution timer to determine the Lower Part of the fraction
+        auto HRRollOverCount = lowResTicks / LowResTicks_HighResRollOver;
+        auto HRRollOverFracTicks = HRRollOverCount * HighResRicks_RollOverFracResidual;
+        uint32_t EdgeHRTicks = 0;
+        if(qi->HighResClockTick_Prev < qi->HighResClockTick)
+            EdgeHRTicks = qi->HighResClockTick - qi->HighResClockTick_Prev;
+        else
+            EdgeHRTicks = ((uint64_t) qi->HighResClockTick + qi->HighResClockTick_Prev) - UINT32_MAX;
+        
+        auto HRTicksFrac = (HRRollOverFracTicks + EdgeHRTicks) % HighResRicks_RollOverFracResidual;
+        if((HRTicksFrac > Fract_HR_Ticks_MIN) && (HRTicksFrac < Fract_HR_Ticks_MAX)){
+            rv += HRTicksFrac/(double)HighResClockHz;
+        }
     }
 
 
